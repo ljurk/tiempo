@@ -112,8 +112,12 @@ var statusCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		totalNetWorkingTime := time.Duration(0)
+		totalBreakTime := time.Duration(0)
 		for _, record := range records {
 			// Print the table row
+			totalNetWorkingTime += lib.CalculateDuration(record.Working) - lib.CalculateDuration(record.Breaks)
+			totalBreakTime += lib.CalculateDuration(record.Breaks)
 			fmt.Fprintf(writer,
 				"%s\t%s\t%s\t%s\t%s\n",
 				record.Date,
@@ -122,6 +126,13 @@ var statusCmd = &cobra.Command{
 				lib.PrintPeriods(record.Working),
 				lib.PrintPeriods(record.Breaks))
 		}
+		fmt.Fprintln(writer, regexp.MustCompile(`\w`).ReplaceAllString(header, "="))
+		fmt.Fprintf(writer,
+			"%s\t%s\t%s\n",
+			"Total",
+			totalNetWorkingTime,
+			totalBreakTime)
+
 	},
 }
 
