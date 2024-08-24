@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -14,14 +15,19 @@ type Period struct {
 	End   string `yaml:"end"`
 }
 
-type Tiempo struct {
+type Day struct {
 	Date    string   `yaml:"date"`
 	Working []Period `yaml:"working"`
 	Breaks  []Period `yaml:"breaks"`
 }
 
+type Tiempo struct {
+	Targets map[string]string
+	Days    []Day `yaml:"days"`
+}
+
 const timeFormat string = "15:04"
-const dateFormat string = "02.01.2006"
+const DateFormat string = "02.01.2006"
 
 func PrintPeriods(periods []Period) string {
 	result := ""
@@ -33,6 +39,7 @@ func PrintPeriods(periods []Period) string {
 	}
 	return result
 }
+
 func CalculateDuration(periods []Period) time.Duration {
 	total := time.Duration(0)
 	for _, period := range periods {
@@ -49,7 +56,7 @@ func CalculateDuration(periods []Period) time.Duration {
 	return total
 }
 
-func Read(filepath string) ([]Tiempo, error) {
+func Read(filepath string) (Tiempo, error) {
 	// Open the YAML file
 	file, err := os.Open(filepath)
 	if err != nil {
@@ -60,19 +67,26 @@ func Read(filepath string) ([]Tiempo, error) {
 	// Read the file contents into a byte slice
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return nil, err
+		return Tiempo{}, err
 	}
 
 	// Unmarshal the YAML into a slice of Tiempo structs
-	var records []Tiempo
+	var records Tiempo
 	if err := yaml.Unmarshal(data, &records); err != nil {
-		return nil, err
+		return Tiempo{}, err
+	}
+	// fill Targets if there are none
+	if len(records.Targets) == 0 {
+		for i := time.Monday; i <= time.Saturday; i++ {
+			records.Targets[strings.ToLower(i.String())] = "0h"
+		}
+		records.Targets[strings.ToLower(time.Sunday.String())] = "0h"
 	}
 
 	return records, nil
 }
 
-func Write(filepath string, records []Tiempo) error {
+func Write(filepath string, records Tiempo) error {
 	// Marshal the slice of Tiempo structs to YAML
 	data, err := yaml.Marshal(&records)
 	if err != nil {
@@ -94,73 +108,62 @@ func Write(filepath string, records []Tiempo) error {
 	return nil
 }
 
-func UpdateTime(filepath, timeField string, periodType string, newTime string) error {
+func UpdateTime(filepath string, timeField string, periodType string, newTime string) error {
 	records, err := Read(filepath)
 	if err != nil {
 		return err
 	}
-	current_date := time.Now().Local().Format(dateFormat)
+	currentDate := time.Now().Local().Format(DateFormat)
 	recordFound := false
 
-	// Update the time field for the matching date or add a new record
-	for i, record := range records {
-		if record.Date == current_date {
-			recordFound = true
-			switch periodType {
-			case "working":
-				switch timeField {
-				case "Start":
-					for j, _ := range record.Working {
-						if record.Working[j].End == "" {
-							return fmt.Errorf("End your last Period before starting a new")
-						}
-					}
-					records[i].Working = append(record.Working, Period{Start: newTime})
-				case "End":
-					updated := false
-					// Find the last Period without an End time and update it
-					for j, _ := range record.Working {
-						if record.Working[j].End == "" {
-							records[i].Working[j].End = newTime
-							updated = true
-							break
-						}
-					}
-					if !updated {
-						return fmt.Errorf("There is no started Period to end")
-					}
-				}
-			case "break":
-				switch timeField {
-				case "Start":
-					for j, _ := range record.Breaks {
-						if record.Breaks[j].End == "" {
-							return fmt.Errorf("End your last Period before starting a new")
-						}
-					}
-					records[i].Breaks = append(record.Breaks, Period{Start: newTime})
-				case "End":
-					updated := false
-					// Find the last Period without an End time and update it
-					for j, _ := range record.Breaks {
-						if record.Breaks[j].End == "" {
-							records[i].Breaks[j].End = newTime
-							updated = true
-							break
-						}
-					}
-					if !updated {
-						return fmt.Errorf("There is no started Period to end")
-					}
+	updatePeriod := func(periods *[]Period, newTime string) error {
+		switch timeField {
+		case "Start":
+			for _, period := range *periods {
+				if period.End == "" {
+					return fmt.Errorf("end your last period before starting a new one")
 				}
 			}
+			*periods = append(*periods, Period{Start: newTime})
+		case "End":
+			updated := false
+			for i := range *periods {
+				if (*periods)[i].End == "" {
+					(*periods)[i].End = newTime
+					updated = true
+					break
+				}
+			}
+			if !updated {
+				return fmt.Errorf("there is no started period to end")
+			}
 		}
+		return nil
+	}
+
+	for i, record := range records.Days {
+		if record.Date != currentDate {
+			continue
+		}
+		recordFound = true
+		switch periodType {
+		case "working":
+			if err := updatePeriod(&records.Days[i].Working, newTime); err != nil {
+				return err
+			}
+		case "break":
+			if err := updatePeriod(&records.Days[i].Breaks, newTime); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unknown period type: %s", periodType)
+		}
+		break
 	}
 
 	if !recordFound {
-		// If the date doesn't exist and it's for Start, create a new entry
-		if timeField == "Start" {
-			records = append(records, Tiempo{Date: current_date, Working: []Period{{Start: newTime}}})
+		if timeField == "Start" && periodType == "working" {
+			records.Days = append(records.Days, Day{Date: currentDate, Working: []Period{{Start: newTime}}})
 		} else {
 			return fmt.Errorf("no existing record for the date, and cannot set End without a Start")
 		}
@@ -169,6 +172,5 @@ func UpdateTime(filepath, timeField string, periodType string, newTime string) e
 	if err := Write(filepath, records); err != nil {
 		return fmt.Errorf("failed to write updated records to file %s: %w", filepath, err)
 	}
-	// Write the updated records back to file
 	return nil
 }

@@ -45,10 +45,6 @@ var startCmd = &cobra.Command{
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		if periodType != "working" && periodType != "break" {
-			fmt.Println("type should be one of [working, break]")
-			os.Exit(1)
-		}
 
 		current_time := time.Now().Local().Format("15:04")
 
@@ -74,10 +70,6 @@ var endCmd = &cobra.Command{
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		if periodType != "working" && periodType != "break" {
-			fmt.Println("type should be one of [working, break]")
-			os.Exit(1)
-		}
 		current_time := time.Now().Local().Format("15:04")
 
 		if err := lib.UpdateTime(filepath, "End", periodType, current_time); err != nil {
@@ -101,7 +93,7 @@ var statusCmd = &cobra.Command{
 		writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		defer writer.Flush()
 		// Print the table header
-		header := "Date\tNetWorkingTime\tNetBreakTime\tWorking\tBreaks"
+		header := "Date\tNetWorkingTime\tNetBreakTime\tDiff\tWorking\tBreaks"
 		fmt.Fprintln(writer, header)
 		// underline header
 		fmt.Fprintln(writer, regexp.MustCompile(`\w`).ReplaceAllString(header, "~"))
@@ -114,24 +106,38 @@ var statusCmd = &cobra.Command{
 
 		totalNetWorkingTime := time.Duration(0)
 		totalBreakTime := time.Duration(0)
-		for _, record := range records {
+		totalDiff := time.Duration(0)
+		for _, record := range records.Days {
 			// Print the table row
-			totalNetWorkingTime += lib.CalculateDuration(record.Working) - lib.CalculateDuration(record.Breaks)
-			totalBreakTime += lib.CalculateDuration(record.Breaks)
+			date, err := time.Parse(lib.DateFormat, record.Date)
+			if err != nil {
+				fmt.Println("Error parsing date:", err)
+				return
+			}
+
+			// Get the day of the week
+			dayOfWeek := strings.ToLower(date.Weekday().String())
+			targetDuration, _ := time.ParseDuration(records.Targets[dayOfWeek])
 			fmt.Fprintf(writer,
-				"%s\t%s\t%s\t%s\t%s\n",
+				"%s,%s\t%s\t%s\t%s\t%s\t%s\n",
+				dayOfWeek,
 				record.Date,
 				lib.CalculateDuration(record.Working)-lib.CalculateDuration(record.Breaks),
 				lib.CalculateDuration(record.Breaks),
+				lib.CalculateDuration(record.Working)-lib.CalculateDuration(record.Breaks)-targetDuration,
 				lib.PrintPeriods(record.Working),
 				lib.PrintPeriods(record.Breaks))
+			totalNetWorkingTime += lib.CalculateDuration(record.Working) - lib.CalculateDuration(record.Breaks)
+			totalBreakTime += lib.CalculateDuration(record.Breaks)
+			totalDiff += lib.CalculateDuration(record.Working) - lib.CalculateDuration(record.Breaks) - targetDuration
 		}
 		fmt.Fprintln(writer, regexp.MustCompile(`\w`).ReplaceAllString(header, "="))
 		fmt.Fprintf(writer,
-			"%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\n",
 			"Total",
 			totalNetWorkingTime,
-			totalBreakTime)
+			totalBreakTime,
+			totalDiff)
 
 	},
 }
