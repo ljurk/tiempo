@@ -2,108 +2,83 @@ package lib
 
 import (
 	"fmt"
+	"io"
 	"os"
-	"reflect"
-	"strings"
 	"time"
 
-	"github.com/gocarina/gocsv"
+	"gopkg.in/yaml.v2"
 )
 
+type Period struct {
+	Start string `yaml:"start"`
+	End   string `yaml:"end"`
+}
+
 type Tiempo struct {
-	Date          string `csv:"date"`
-	Start         string `csv:"start"`
-	End           string `csv:"end"`
-	Breakduration string `csv:"break"`
+	Date    string   `yaml:"date"`
+	Working []Period `yaml:"working"`
+	Breaks  []Period `yaml:"breaks"`
 }
 
-// Expand ~ and environment variables in the path
-func ExpandPath(path string) (string, error) {
-	// Expand environment variables
-	path = os.ExpandEnv(path)
+const timeFormat string = "15:04"
+const dateFormat string = "02.01.2006"
 
-	// Expand the ~ to the user's home directory
-	if strings.HasPrefix(path, "~/") {
-		homeDir, err := os.UserHomeDir()
+func PrintPeriods(periods []Period) string {
+	result := ""
+	for _, period := range periods {
+		result += fmt.Sprintf("%s-%s;", period.Start, period.End)
+	}
+	if len(result) > 0 {
+		return result[:len(result)-1] // Remove trailing semicolon
+	}
+	return result
+}
+func CalculateDuration(periods []Period) time.Duration {
+	total := time.Duration(0)
+	for _, period := range periods {
+		start, err := time.Parse(timeFormat, period.Start)
 		if err != nil {
-			return "", err
+			return total
 		}
-		return homeDir + path[1:], nil
-	}
-	return path, nil
-}
-
-func (record *Tiempo) Duration() string {
-	// Define the time format
-	timeFormat := "15:04" // 24-hour format
-
-	// Parse the time strings into time.Time objects
-	startTime, err := time.Parse(timeFormat, record.Start)
-	if err != nil {
-		return "--:--"
-	}
-	endTime, err := time.Parse(timeFormat, record.End)
-	if err != nil {
-		return "--:--"
-	}
-
-	// Calculate the duration between the two times
-	duration := endTime.Sub(startTime)
-
-	return fmt.Sprintf("%d:%02d", int(duration.Hours()), int(duration.Minutes())%60)
-}
-
-func ContainsDate(tiempos []Tiempo, date string) bool {
-	for _, tiempo := range tiempos {
-		if tiempo.Date == date {
-			return true
+		end, err := time.Parse(timeFormat, period.End)
+		if err != nil {
+			return total
 		}
+		total += end.Sub(start)
 	}
-	return false
+	return total
 }
 
-func PrintHeader() string {
-	record := Tiempo{}
-	t := reflect.TypeOf(record)
-
-	out := ""
-	for i := 0; i < t.NumField(); i++ {
-		tag := t.Field(i).Tag.Get("csv")
-		out += fmt.Sprintf("%s,", tag)
-	}
-	return out[:len(out)-1] + "\n"
-}
-
-func PrintRecordWithTags(record interface{}) {
-	v := reflect.ValueOf(record)
-	t := reflect.TypeOf(record)
-
-	for i := 0; i < v.NumField(); i++ {
-		field := v.Field(i)
-		tag := t.Field(i).Tag.Get("csv")
-		fmt.Printf("%s: %v\n", tag, field.Interface())
-	}
-	fmt.Println()
-}
-
-func Read(filepath string) []Tiempo {
-	// Open the CSV file
+func Read(filepath string) ([]Tiempo, error) {
+	// Open the YAML file
 	file, err := os.Open(filepath)
 	if err != nil {
-		panic(err)
+		file, err = os.Create(filepath)
 	}
 	defer file.Close()
 
-	// Read the CSV file into a slice of Record structs
-	var records []Tiempo
-	if err := gocsv.UnmarshalFile(file, &records); err != nil {
-		panic(err)
+	// Read the file contents into a byte slice
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
 	}
 
-	return records
+	// Unmarshal the YAML into a slice of Tiempo structs
+	var records []Tiempo
+	if err := yaml.Unmarshal(data, &records); err != nil {
+		return nil, err
+	}
+
+	return records, nil
 }
 
 func Write(filepath string, records []Tiempo) error {
+	// Marshal the slice of Tiempo structs to YAML
+	data, err := yaml.Marshal(&records)
+	if err != nil {
+		return err
+	}
+
 	// Open the file for writing
 	file, err := os.Create(filepath)
 	if err != nil {
@@ -111,39 +86,89 @@ func Write(filepath string, records []Tiempo) error {
 	}
 	defer file.Close()
 
-	// Write the slice of Tiempo structs to the file as CSV
-	if err := gocsv.MarshalFile(&records, file); err != nil {
+	// Write the YAML data to the file
+	if _, err := file.Write(data); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func UpdateTime(filepath, timeField string, newTime string) error {
-	// Open the CSV file
-	records := Read(filepath)
-
-	current_date := time.Now().Local().Format("02.01.2006")
+func UpdateTime(filepath, timeField string, periodType string, newTime string) error {
+	records, err := Read(filepath)
+	if err != nil {
+		return err
+	}
+	current_date := time.Now().Local().Format(dateFormat)
+	recordFound := false
 
 	// Update the time field for the matching date or add a new record
-	if ContainsDate(records, current_date) {
-		for i, record := range records {
-			if record.Date == current_date {
+	for i, record := range records {
+		if record.Date == current_date {
+			recordFound = true
+			switch periodType {
+			case "working":
 				switch timeField {
 				case "Start":
-					records[i].Start = newTime
+					for j, _ := range record.Working {
+						if record.Working[j].End == "" {
+							return fmt.Errorf("End your last Period before starting a new")
+						}
+					}
+					records[i].Working = append(record.Working, Period{Start: newTime})
 				case "End":
-					records[i].End = newTime
+					updated := false
+					// Find the last Period without an End time and update it
+					for j, _ := range record.Working {
+						if record.Working[j].End == "" {
+							records[i].Working[j].End = newTime
+							updated = true
+							break
+						}
+					}
+					if !updated {
+						return fmt.Errorf("There is no started Period to end")
+					}
+				}
+			case "break":
+				switch timeField {
+				case "Start":
+					for j, _ := range record.Breaks {
+						if record.Breaks[j].End == "" {
+							return fmt.Errorf("End your last Period before starting a new")
+						}
+					}
+					records[i].Breaks = append(record.Breaks, Period{Start: newTime})
+				case "End":
+					updated := false
+					// Find the last Period without an End time and update it
+					for j, _ := range record.Breaks {
+						if record.Breaks[j].End == "" {
+							records[i].Breaks[j].End = newTime
+							updated = true
+							break
+						}
+					}
+					if !updated {
+						return fmt.Errorf("There is no started Period to end")
+					}
 				}
 			}
 		}
-	} else {
+	}
+
+	if !recordFound {
 		// If the date doesn't exist and it's for Start, create a new entry
 		if timeField == "Start" {
-			records = append(records, Tiempo{Date: current_date, Start: newTime})
+			records = append(records, Tiempo{Date: current_date, Working: []Period{{Start: newTime}}})
+		} else {
+			return fmt.Errorf("no existing record for the date, and cannot set End without a Start")
 		}
 	}
 
-	// Write the updated records back to the CSV file
-	return Write(filepath, records)
+	if err := Write(filepath, records); err != nil {
+		return fmt.Errorf("failed to write updated records to file %s: %w", filepath, err)
+	}
+	// Write the updated records back to file
+	return nil
 }

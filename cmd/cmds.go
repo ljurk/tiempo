@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -11,25 +12,49 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func getFilePath(cmd *cobra.Command) (string, error) {
+	filepath, err := cmd.Flags().GetString("file")
+	if err != nil {
+		return "", fmt.Errorf("error getting flag: %w", err)
+	}
+	// Expand environment variables
+	filepath = os.ExpandEnv(filepath)
+
+	// Expand the ~ to the user's home directory
+	if strings.HasPrefix(filepath, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return homeDir + filepath[1:], nil
+	}
+	return filepath, nil
+}
+
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "set Start",
 	Run: func(cmd *cobra.Command, args []string) {
-		filepath, err := cmd.Flags().GetString("file")
+		filepath, err := getFilePath(cmd)
 		if err != nil {
-			fmt.Println("Error getting flag:", err)
+			fmt.Println(err)
 			os.Exit(1)
 		}
-		// Expand the path
-		filepath, err = lib.ExpandPath(filepath)
+		periodType, err := cmd.Flags().GetString("type")
 		if err != nil {
-			fmt.Println("Error expanding path:", err)
+			fmt.Println(err)
 			os.Exit(1)
 		}
+		if periodType != "working" && periodType != "break" {
+			fmt.Println("type should be one of [working, break]")
+			os.Exit(1)
+		}
+
 		current_time := time.Now().Local().Format("15:04")
 
-		if err := lib.UpdateTime(filepath, "Start", current_time); err != nil {
-			panic(err)
+		if err := lib.UpdateTime(filepath, "Start", periodType, current_time); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
 		}
 		fmt.Println("Start time recorded:", current_time)
 	},
@@ -39,21 +64,25 @@ var endCmd = &cobra.Command{
 	Use:   "end",
 	Short: "set End",
 	Run: func(cmd *cobra.Command, args []string) {
-		filepath, err := cmd.Flags().GetString("file")
+		filepath, err := getFilePath(cmd)
 		if err != nil {
-			fmt.Println("Error getting flag:", err)
+			fmt.Println(err)
 			os.Exit(1)
 		}
-		// Expand the path
-		filepath, err = lib.ExpandPath(filepath)
+		periodType, err := cmd.Flags().GetString("type")
 		if err != nil {
-			fmt.Println("Error expanding path:", err)
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		if periodType != "working" && periodType != "break" {
+			fmt.Println("type should be one of [working, break]")
 			os.Exit(1)
 		}
 		current_time := time.Now().Local().Format("15:04")
 
-		if err := lib.UpdateTime(filepath, "End", current_time); err != nil {
-			panic(err)
+		if err := lib.UpdateTime(filepath, "End", periodType, current_time); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
 		}
 		fmt.Println("End time recorded:", current_time)
 	},
@@ -63,77 +92,50 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "show work hours per day",
 	Run: func(cmd *cobra.Command, args []string) {
-		filepath, err := cmd.Flags().GetString("file")
+		filepath, err := getFilePath(cmd)
 		if err != nil {
-			fmt.Println("Error getting flag:", err)
-			os.Exit(1)
-		}
-		// Expand the path
-		filepath, err = lib.ExpandPath(filepath)
-		if err != nil {
-			fmt.Println("Error expanding path:", err)
+			fmt.Println(err)
 			os.Exit(1)
 		}
 		// Create a tab writer
 		writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		defer writer.Flush()
 		// Print the table header
-		header := "Date\tStart\tEnd\tDuration"
+		header := "Date\tNetWorkingTime\tNetBreakTime\tWorking\tBreaks"
 		fmt.Fprintln(writer, header)
+		// underline header
 		fmt.Fprintln(writer, regexp.MustCompile(`\w`).ReplaceAllString(header, "~"))
 
-		for _, record := range lib.Read(filepath) {
+		records, err := lib.Read(filepath)
+		if err != nil {
+			fmt.Println("Error reading file:", err)
+			os.Exit(1)
+		}
+
+		for _, record := range records {
 			// Print the table row
-			fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(writer,
+				"%s\t%s\t%s\t%s\t%s\n",
 				record.Date,
-				record.Start,
-				record.End,
-				record.Duration(),
-			)
+				lib.CalculateDuration(record.Working)-lib.CalculateDuration(record.Breaks),
+				lib.CalculateDuration(record.Breaks),
+				lib.PrintPeriods(record.Working),
+				lib.PrintPeriods(record.Breaks))
 		}
-	},
-}
-
-var initCmd = &cobra.Command{
-	Use:   "init",
-	Short: "A brief description of your command",
-	Run: func(cmd *cobra.Command, args []string) {
-		filepath, err := cmd.Flags().GetString("file")
-		if err != nil {
-			fmt.Println("Error getting flag:", err)
-			os.Exit(1)
-		}
-		// Expand the path
-		filepath, err = lib.ExpandPath(filepath)
-		if err != nil {
-			fmt.Println("Error expanding path:", err)
-			os.Exit(1)
-		}
-		if _, err := os.Stat(filepath); err == nil {
-			fmt.Printf("%s already exists\n", filepath)
-			return
-		}
-
-		file, err := os.Create(filepath)
-		if err != nil {
-			panic(err)
-		}
-		defer file.Close()
-		file.WriteString(lib.PrintHeader())
 	},
 }
 
 // Function to set up common flags
 func setupFlags(cmd *cobra.Command) {
-	cmd.Flags().StringP("file", "f", "~/tiempo.csv", "path to CSV file")
+	cmd.Flags().StringP("file", "f", "~/tiempo.yml", "path to CSV file")
 }
 
 func init() {
-	setupFlags(initCmd)
+	startCmd.Flags().StringP("type", "t", "working", "either [working, break]")
+	endCmd.Flags().StringP("type", "t", "working", "either [working, break]")
 	setupFlags(startCmd)
 	setupFlags(endCmd)
 	setupFlags(statusCmd)
-	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(endCmd)
 	rootCmd.AddCommand(statusCmd)
