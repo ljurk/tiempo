@@ -49,7 +49,7 @@ func CalculateDuration(periods []Period) time.Duration {
 		}
 		end, err := time.Parse(timeFormat, period.End)
 		if err != nil {
-			return total
+			end, _ = time.Parse(timeFormat, time.Now().Local().Format("15:04"))
 		}
 		total += end.Sub(start)
 	}
