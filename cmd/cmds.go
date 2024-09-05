@@ -80,10 +80,26 @@ var endCmd = &cobra.Command{
 	},
 }
 
+func fmtDuration(d time.Duration) string {
+	d = d.Round(time.Minute)
+	h := d / time.Hour
+	d -= h * time.Hour
+	if d < 0 {
+		d = -d
+	}
+	m := d / time.Minute
+	return fmt.Sprintf("%02d:%02d", h, m)
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "show work hours per day",
 	Run: func(cmd *cobra.Command, args []string) {
+		verbose, err := cmd.Flags().GetBool("verbose")
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
 		filepath, err := getFilePath(cmd)
 		if err != nil {
 			fmt.Println(err)
@@ -92,8 +108,12 @@ var statusCmd = &cobra.Command{
 		// Create a tab writer
 		writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		defer writer.Flush()
+
 		// Print the table header
-		header := "Date\tNetWorkingTime\tNetBreakTime\tDiff\tWorking\tBreaks"
+		header := "Date\tNetWorkingTime\tNetBreakTime\tTargetDuration\tDiff"
+		if verbose {
+			header += "\tWorking\tBreaks"
+		}
 		fmt.Fprintln(writer, header)
 		// underline header
 		fmt.Fprintln(writer, regexp.MustCompile(`\w`).ReplaceAllString(header, "~"))
@@ -118,22 +138,33 @@ var statusCmd = &cobra.Command{
 			// Get the day of the week
 			dayOfWeek := strings.ToLower(date.Weekday().String())
 			targetDuration, _ := time.ParseDuration(records.Targets[dayOfWeek])
+
+			// Print row
 			fmt.Fprintf(writer,
-				"%s,%s\t%s\t%s\t%s\t%s\t%s\n",
+				"%s,%s\t%s\t%s\t%s\t%s",
 				dayOfWeek,
 				record.Date,
-				lib.CalculateDuration(record.Working)-lib.CalculateDuration(record.Breaks),
-				lib.CalculateDuration(record.Breaks),
-				lib.CalculateDuration(record.Working)-lib.CalculateDuration(record.Breaks)-targetDuration,
-				lib.PrintPeriods(record.Working),
-				lib.PrintPeriods(record.Breaks))
+				fmtDuration(lib.CalculateDuration(record.Working)-lib.CalculateDuration(record.Breaks)),
+				fmtDuration(lib.CalculateDuration(record.Breaks)),
+				fmtDuration(targetDuration),
+				fmtDuration(lib.CalculateDuration(record.Working)-lib.CalculateDuration(record.Breaks)-targetDuration))
+			if verbose {
+				fmt.Fprintf(writer,
+					"\t%s\t%s",
+					lib.PrintPeriods(record.Working),
+					lib.PrintPeriods(record.Breaks))
+			}
+			fmt.Fprintf(writer, "\n")
+
 			totalNetWorkingTime += lib.CalculateDuration(record.Working) - lib.CalculateDuration(record.Breaks)
 			totalBreakTime += lib.CalculateDuration(record.Breaks)
 			totalDiff += lib.CalculateDuration(record.Working) - lib.CalculateDuration(record.Breaks) - targetDuration
 		}
+
+		// Print summary
 		fmt.Fprintln(writer, regexp.MustCompile(`\w`).ReplaceAllString(header, "="))
 		fmt.Fprintf(writer,
-			"%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t\t%s\n",
 			"Total",
 			totalNetWorkingTime,
 			totalBreakTime,
@@ -150,6 +181,7 @@ func setupFlags(cmd *cobra.Command) {
 func init() {
 	startCmd.Flags().StringP("type", "t", "working", "either [working, break]")
 	endCmd.Flags().StringP("type", "t", "working", "either [working, break]")
+	statusCmd.Flags().BoolP("verbose", "v", false, "")
 	setupFlags(startCmd)
 	setupFlags(endCmd)
 	setupFlags(statusCmd)
